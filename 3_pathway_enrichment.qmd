@@ -1,0 +1,67 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+jupyter: python3
+---
+
+```{r}
+Sys.setenv(RETICULATE_PYTHON="/Users/air/bioenv311/bin/python")
+
+library(reticulate)
+
+py_config()
+```
+
+```{python}
+import pandas as pd
+import gseapy as gp
+```
+
+```{python}
+up_genes = pd.read_csv("upregulated_genes.csv", index_col=0)
+down_genes = pd.read_csv("downregulated_genes.csv", index_col=0)
+up_gene_list = up_genes.index.tolist()
+down_gene_list = down_genes.index.tolist()
+```
+
+```{python}
+gene_sets = ["MSigDB_Hallmark_2020", "KEGG_2021_Human"]
+
+enr_up = gp.enrichr(
+    gene_list=up_gene_list,
+    gene_sets=gene_sets,
+    organism="human",
+    outdir=None,   # don't write files, just return the dataframe
+)
+ 
+enr_down = gp.enrichr(
+    gene_list=down_gene_list,
+    gene_sets=gene_sets,
+    organism="human",
+    outdir=None,
+)
+
+# Filter to significant pathway hits and look specifically for
+# metabolic/mitochondrial terms
+up_results = enr_up.results.sort_values("Adjusted P-value")
+down_results = enr_down.results.sort_values("Adjusted P-value")
+```
+
+```{python}
+up_results.head()
+```
+
+```{python}
+print(f"Top 15 pathways UP in PCOS")
+print(up_results[["Term","Overlap","Adjusted P-value", "Genes"]].head(15).to_string())
+```
+
+**UP in PCOS:** dominated by ECM-receptor interaction, EMT, Focal Adhesion, Apical Junction, Cell Adhesion Molecules, this is overwhelmingly a **structural/tissue-remodeling signature** (collagens, laminins, integrins), not primarily oxidative stress or metabolism.
+
+```{python}
+print(f"Top 15 pathways DOWN in PCOS")
+print(down_results[["Term", "Overlap", "Adjusted P-value", "Genes"]].head(15).to_string())
+```
+
+**DOWN in PCOS — this side is more directly relevant to your metabolic/oxidative focus, worth emphasizing more:**Hypoxia, Glycolysis, PPAR Signaling, and (borderline, p=0.276) Insulin Resistance and Ferroptosis all trending down. This is actually a coherent, interesting pattern worth naming directly: **PCOS granulosa cells show reduced glycolytic/hypoxia-response and lipid-metabolism (PPAR) signaling** — a real metabolic finding, just not GPX3-driven oxidative stress specifically, and it's on the "down" side, opposite direction from what the original paper's central narrative emphasizes.
