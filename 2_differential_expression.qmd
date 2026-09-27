@@ -1,0 +1,209 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+jupyter: python3
+---
+
+## differential_expression
+
+```{python}
+import pandas as pd
+count_filtered = pd.read_csv("count_filtered.csv", index_col=0)
+sample =  pd.read_csv("sample.csv", index_col=0)
+```
+
+```{python}
+count_filtered.head()
+```
+
+```{python}
+sample.head()
+```
+
+### Map genes
+
+```{python}
+import mygene
+
+mg = mygene.MyGeneInfo()
+
+
+gene_ids_clean = [g.split(".")[0] for g in count_filtered.index]  
+
+result = mg.querymany(gene_ids_clean, scopes="ensembl.gene", fields="symbol", species="human")
+id_to_symbol = {r["query"]: r.get("symbol") for r in result if "symbol" in r}
+
+count_filtered["gene_symbol"] = [id_to_symbol.get(g.split(".")[0]) for g in count_filtered.index]
+
+print(f"Mapped: {count_filtered['gene_symbol'].notna().sum()} of {len(count_filtered)}")
+```
+
+```{python}
+dup_ids = ["ENSG00000117262", "ENSG00000275496", "ENSG00000188092"]
+for r in result:
+    if r["query"] in dup_ids:
+        print(r)
+```
+
+```{python}
+count_filtered = count_filtered.dropna(subset=["gene_symbol"])
+count_filtered = count_filtered.drop_duplicates(subset="gene_symbol", keep="first")
+count_filtered = count_filtered.set_index("gene_symbol")
+
+print(f"Final gene count after mapping and dedup: {len(count_filtered)}")
+```
+
+### Apply deseq
+
+```{python}
+from pydeseq2.dds import DeseqDataSet
+from pydeseq2.ds import DeseqStats
+```
+
+```{python}
+counts_for_dds = count_filtered.T
+condition_data = sample[["condition"]].copy()
+condition_data = condition_data.reindex(counts_for_dds.index)
+```
+
+```{python}
+print("Counts:")
+print(counts_for_dds.index)
+
+print("\nMetadata:")
+print(condition_data.index)
+
+print("\nSame index?")
+print(counts_for_dds.index.equals(condition_data.index))
+
+print("\nMissing metadata:")
+print(condition_data[condition_data["condition"].isna()])
+```
+
+```{python}
+dds = DeseqDataSet(
+    counts=counts_for_dds,
+    metadata=condition_data,
+    design_factors="condition",
+    refit_cooks=True,
+)
+
+dds.deseq2()
+```
+
+```{python}
+stat_res = DeseqStats(
+    dds,
+    contrast=["condition", "PCOS", "Normal"],  
+)
+stat_res.summary()
+ 
+results_df = stat_res.results_df.sort_values("padj")
+ 
+print(results_df.head(10))
+```
+
+```{python}
+sig_genes = results_df[
+(results_df["padj"]< 0.05) &
+(results_df["log2FoldChange"].abs() > 1)]
+
+print(f"Total genes tested: {len(results_df)}")
+print(f"Significant genes (padj<0.05, |log2FC|>1): {len(sig_genes)}")
+```
+
+```{python}
+# Split into up- and down-regulated 
+up_in_pcos = sig_genes[sig_genes["log2FoldChange"] > 1]
+down_in_pcos = sig_genes[sig_genes["log2FoldChange"] < -1]
+
+print(f" Up in PCOS: {len(up_in_pcos)}")
+print(f" Down in PCOS: {len(down_in_pcos)}")
+```
+
+```{python}
+# Look at them, sorted by strength of change not just significance
+print("Top 10 upregulated in PCOS (by fold change):")
+print(up_in_pcos.sort_values("log2FoldChange", ascending=False).head(10))
+ 
+print("\nTop 10 downregulated in PCOS (by fold change):")
+print(down_in_pcos.sort_values("log2FoldChange").head(10))
+```
+
+```{python}
+sig_genes.to_csv("significant_genes.csv")
+up_in_pcos.to_csv("upregulated_genes.csv")
+down_in_pcos.to_csv("downregulated_genes.csv")
+```
+
+```{python}
+count_filtered.to_csv("counts_with_gene_symbol.csv")
+```
+
+## Gpx3 individual check 
+
+```{python}
+if "GPX3" in results_df.index:
+    gpx3_result = results_df.loc["GPX3"]
+    print("=== GPX3 individual DESeq2 result ===")
+    print(gpx3_result)
+ 
+    print(f"\nlog2FoldChange: {gpx3_result['log2FoldChange']:.3f}")
+    print(f"raw pvalue:     {gpx3_result['pvalue']:.4f}")
+    print(f"padj:           {gpx3_result['padj']:.4f}")
+ 
+    direction = "UP" if gpx3_result['log2FoldChange'] > 0 else "DOWN"
+    print(f"\nDirection: {direction} in PCOS")
+    print(f"Significant at padj<0.05: {gpx3_result['padj'] < 0.05}")
+else:
+    print("GPX3 not found in results_df index -- check that gene symbol "
+          "mapping was applied to this results table, and that GPX3 "
+          "survived your low-expression filtering step.")
+ 
+```
+
+where does GPX3 rank among ALL tested genes?
+
+```{python}
+ Even if GPX3's padj isn't below 0.05, it's worth knowing how it ranks
+# relative to everything else tested -- e.g. "top 50 most significant
+# gene out of 13,000+ tested" is a meaningfully different statement
+# than just reporting a p-value in isolation.
+results_sorted = results_df.dropna(subset=["padj"]).sort_values("padj")
+if "GPX3" in results_sorted.index:
+    rank = results_sorted.index.get_loc("GPX3") + 1
+    total = len(results_sorted)
+    print(f"\nGPX3 ranks #{rank} of {total} genes tested, by padj "
+          f"(lower rank = more significant)")
+    print(f"That places it in the top {rank/total*100:.1f}% of all tested genes")
+ 
+```
+
+Show GPX3 alongside a few other genes the original paper highlighted, for direct side-by-side comparison in your writeup
+
+```{python}
+genes_of_interest = ["GPX3"]  # add other paper-highlighted genes here if you have them
+available = [g for g in genes_of_interest if g in results_df.index]
+ 
+print("\n=== Genes of interest, side by side ===")
+print(results_df.loc[available, ["log2FoldChange", "pvalue", "padj"]])
+```
+
+Consistent with the original study's central finding, GPX3 was significantly upregulated in PCOS granulosa cells in this independent reanalysis (log2FC=1.10, \~2.1-fold increase, padj=0.027), ranking in the top 10% of all genes tested by significance. This individual-gene result was statistically robust despite the small cohort size (n=9 vs 9), in contrast to pathway-level MitoCarta scores, which showed only nominal, uncorrected trends that did not survive multiple-testing correction — illustrating how gene-level signals can remain detectable in small studies even when broader pathway-level power is limited.
+
+check other genes
+
+```{python}
+genes_of_interest = ["MYH11"]  
+available = [g for g in genes_of_interest if g in results_df.index]
+ 
+print("\n=== Genes of interest, side by side ===")
+print(results_df.loc[available, ["log2FoldChange", "pvalue", "padj"]])
+```
+
+```{python}
+# Look at them, sorted by strength of change not just significance
+print("Top 20 upregulated in PCOS (by fold change):")
+print(up_in_pcos.sort_values("log2FoldChange", ascending=False).head(20))
+```
