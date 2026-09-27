@@ -1,0 +1,144 @@
+---
+title: "QC"
+format: html
+---
+
+## QC
+
+```{r}
+Sys.setenv(RETICULATE_PYTHON="/Users/air/bioenv/bin/python")
+
+library(reticulate)
+
+py_config()
+```
+
+```{python}
+import pandas as pd
+import numpy as np
+```
+
+```{python}
+count  = pd.read_csv("GSE293353_gene_count_matrix.txt", sep="\t")
+sample= pd.read_csv("GSE293353_Sample_Information.csv")
+```
+
+```{python}
+print(count.head())
+print(count.shape)
+```
+
+```{python}
+print(sample.head())
+print(sample.columns)
+```
+
+```{python}
+count["gene_id"].duplicated().sum()
+```
+
+```{python}
+count.isna().sum().sum()
+```
+
+```{python}
+count = count.set_index("gene_id")
+```
+
+Check genes and remove genes that have mostly zero expression
+
+```{python}
+count = count.apply(pd.to_numeric, errors="coerce")
+
+genes_all_zero = (count.sum(axis=1) == 0)
+
+print(
+    f"\nGenes with 0 counts across ALL samples: {genes_all_zero.sum()} "
+    f"({genes_all_zero.sum() / count.shape[0] * 100:.1f}%)"
+)
+```
+
+```{python}
+genes_most_zero = (count == 0).sum(axis=1)/count.shape[1]
+print(f"\nGenes with >90% zeros across samples: {(genes_most_zero >0.9).sum()}")
+print(f"\nGenes with >50% zeros across samples: {(genes_most_zero>0.5).sum()}")
+```
+
+```{python}
+#drop genes with zero 
+count = count.loc[~genes_all_zero]
+count.shape
+```
+
+we will filter low expression genes using CPM (Counts Per Million).
+
+```{python}
+sample["condition"] = sample["group"].str.contains(
+    "control", case=False, na=False
+).map({True: "Normal", False: "PCOS"})
+```
+
+```{python}
+n_normal = sample["condition"].astype(str).str.contains(
+    "Normal", case=False, na=False
+).sum()
+
+print(f"\nNumber of normal samples: {n_normal}")
+
+ 
+# Step 1: convert raw counts to CPM
+lib_sizes_for_cpm = count.sum(axis=0)                     # total counts per sample
+cpm = count.div(lib_sizes_for_cpm, axis=1) * 1e6           # genes x samples, now in CPM
+ 
+# Step 2: set thresholds
+min_cpm = 1                                  # CPM threshold for "expressed" 1 or higher 
+min_samples = max(10, n_normal // 2)         # tied to smaller group (half the normal)
+#Use half of the normal samples, but never go below 10
+ 
+# Step 3: apply filter on CPM values, but keep the ORIGINAL raw counts
+# for DESeq2 -- CPM is only used here to decide which genes to keep,
+# DESeq2 still needs untouched raw integer counts to run correctly.
+keep = (cpm >= min_cpm).sum(axis=1) >= min_samples
+count_filtered = count.loc[keep]
+ 
+print(f"\nFiltering: keep genes with >= {min_cpm} CPM in >= {min_samples} samples")
+print(f"Genes before filtering: {count.shape[0]}")
+print(f"Genes after filtering:  {count_filtered.shape[0]}")
+print(f"Genes removed:          {count.shape[0] - count_filtered.shape[0]}")
+```
+
+Perform PCA
+
+```{python}
+sample = sample.set_index("group")
+```
+
+```{python}
+import numpy as np
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+log_counts = np.log2(count_filtered.T + 1)#compress values for analysis
+ 
+pca = PCA(n_components=2)
+coords = pca.fit_transform(log_counts)
+ 
+
+plot_df = pd.DataFrame(coords, columns=["PC1", "PC2"], index=count_filtered.columns)
+plot_df["sample_type"] = sample.loc[plot_df.index, "condition"].values
+ 
+plt.figure(figsize=(8, 7))
+sns.scatterplot(data=plot_df, x="PC1", y="PC2", hue="sample_type", s=15, alpha=0.6)
+plt.title("PCA — PCOS vs. Normal (QC check)")
+plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]*100:.1f}%)")
+plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]*100:.1f}%)")
+plt.tight_layout()
+plt.show()
+
+```
+
+```{python}
+count_filtered.to_csv("count_filtered.csv")
+sample.to_csv("sample.csv")
+```
